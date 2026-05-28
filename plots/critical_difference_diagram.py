@@ -34,14 +34,38 @@ from benchopt.plotting.base import BasePlot  # noqa: E402
 _LOWER_BETTER_METRICS = {"mae", "mse", "rmse", "mase", "smape"}
 
 
-def _fig_to_array(fig):
-    """Render a matplotlib Figure to a (H, W, 3) array in [0, 1]."""
-    fig.canvas.draw()
-    buf = np.asarray(fig.canvas.buffer_rgba())
-    return buf[..., :3].astype(np.float32) / 255.0
+def _fig_to_array(fig, dpi=150):
+    """Render a matplotlib Figure to a (H, W, 3) array in [0, 1].
+
+    Uses ``savefig(..., bbox_inches='tight')`` so artists drawn outside the
+    axes box (e.g. aeon's solver name labels at xlim < 0.1 / > 0.9) are not
+    clipped.
+    """
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
+                facecolor="white")
+    buf.seek(0)
+    img = np.asarray(Image.open(buf).convert("RGB"))
+    return img.astype(np.float32) / 255.0
 
 
-def _text_image(message, width=8, height=3):
+def _pad_to_square(arr):
+    """Pad a (H, W, 3) array with white so the result is square. Centres the
+    content so it sits nicely inside benchopt's 1:1 image cell."""
+    H, W, _ = arr.shape
+    side = max(H, W)
+    if H == W:
+        return arr
+    canvas = np.ones((side, side, 3), dtype=arr.dtype)
+    y0 = (side - H) // 2
+    x0 = (side - W) // 2
+    canvas[y0:y0 + H, x0:x0 + W] = arr
+    return canvas
+
+
+def _text_image(message, width=8, height=8):
     """Fallback image used when a CD diagram cannot be drawn."""
     fig, ax = plt.subplots(figsize=(width, height))
     ax.axis("off")
@@ -153,6 +177,7 @@ class Plot(BasePlot):
                 scores=scores,
                 labels=labels,
                 lower_better=lower,
+                width=9,
             )
         except Exception as exc:  # noqa: BLE001
             return [{
@@ -164,6 +189,11 @@ class Plot(BasePlot):
 
         img = _fig_to_array(fig)
         plt.close(fig)
+        # benchopt's HTML JS forces each image cell into a 1:1 aspect-ratio
+        # box (and uses object-contain), so a wide CD diagram would render
+        # at half the cell height with a lot of empty space. Pad to square
+        # so it fills the cell while preserving the original layout/labels.
+        img = _pad_to_square(img)
         return [{"image": img, "label": objective_column}]
 
     def get_metadata(self, df, objective_column, lower_better):
